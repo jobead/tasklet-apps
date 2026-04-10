@@ -317,6 +317,8 @@ interface EditorProps {
   lineCount: number;
 }
 
+const BASE_LINE_HEIGHT = 24; // leading-6 = 1.5rem = 24px
+
 export const Editor: React.FC<EditorProps> = ({
   content,
   onChange,
@@ -327,7 +329,9 @@ export const Editor: React.FC<EditorProps> = ({
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lineNumbersRef = useRef<HTMLDivElement>(null);
+  const mirrorRef = useRef<HTMLDivElement>(null);
   const [wordWrap, setWordWrap] = useState(false);
+  const [lineHeights, setLineHeights] = useState<number[]>([]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -344,12 +348,79 @@ export const Editor: React.FC<EditorProps> = ({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
 
+  /* ── Measure visual height of each line when word-wrap is on ── */
+  const measureLineHeights = useCallback(() => {
+    if (!wordWrap || !textareaRef.current || !mirrorRef.current) {
+      setLineHeights([]);
+      return;
+    }
+
+    const ta = textareaRef.current;
+    const mirror = mirrorRef.current;
+    const cs = window.getComputedStyle(ta);
+
+    // Make the mirror match the textarea's text-layout exactly
+    Object.assign(mirror.style, {
+      position: "absolute",
+      visibility: "hidden",
+      top: "0",
+      left: "0",
+      height: "auto",
+      width: ta.clientWidth + "px",
+      font: cs.font,
+      letterSpacing: cs.letterSpacing,
+      wordSpacing: cs.wordSpacing,
+      paddingLeft: cs.paddingLeft,
+      paddingRight: cs.paddingRight,
+      paddingTop: "0",
+      paddingBottom: "0",
+      border: "none",
+      boxSizing: "border-box",
+      whiteSpace: "pre-wrap",
+      overflowWrap: "break-word",
+      wordBreak: "normal",
+      lineHeight: cs.lineHeight,
+      tabSize: (cs as any).tabSize || "2",
+    });
+
+    const textLines = content.split("\n");
+    // Build all divs in a fragment for a single reflow
+    const fragment = document.createDocumentFragment();
+    const divs: HTMLDivElement[] = [];
+    for (const line of textLines) {
+      const div = document.createElement("div");
+      div.textContent = line || "\u200b"; // zero-width space keeps empty-line height
+      fragment.appendChild(div);
+      divs.push(div);
+    }
+    mirror.innerHTML = "";
+    mirror.appendChild(fragment);
+
+    // Read all heights in one pass
+    const heights = divs.map((d) => d.offsetHeight);
+    setLineHeights(heights);
+  }, [content, wordWrap]);
+
+  useEffect(() => {
+    measureLineHeights();
+  }, [measureLineHeights]);
+
+  // Re-measure when the textarea resizes (e.g. panel dragged wider/narrower)
+  useEffect(() => {
+    if (!wordWrap || !textareaRef.current) return;
+    const obs = new ResizeObserver(() => measureLineHeights());
+    obs.observe(textareaRef.current);
+    return () => obs.disconnect();
+  }, [wordWrap, measureLineHeights]);
+
+  /* ── Scroll sync ── */
   function syncScroll() {
     if (textareaRef.current && lineNumbersRef.current) {
       lineNumbersRef.current.scrollTop = textareaRef.current.scrollTop;
     }
   }
 
+  /* ── Tab key inserts 2 spaces ── */
   function handleTab(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Tab") {
       e.preventDefault();
@@ -366,6 +437,7 @@ export const Editor: React.FC<EditorProps> = ({
     }
   }
 
+  /* ── Empty state ── */
   if (!filePath) {
     return (
       <div className="flex items-center justify-center h-full text-base-content/40">
@@ -378,9 +450,14 @@ export const Editor: React.FC<EditorProps> = ({
   }
 
   const lines = Array.from({ length: lineCount }, (_, i) => i + 1);
+  const hasHeights = wordWrap && lineHeights.length === lineCount;
 
   return (
     <div className="flex flex-col h-full">
+      {/* Hidden mirror used to measure wrapped-line heights */}
+      <div ref={mirrorRef} aria-hidden="true" />
+
+      {/* Toolbar */}
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-base-300 bg-base-200">
         <span className="text-sm text-base-content/60 truncate font-mono">
           {filePath}
@@ -396,15 +473,16 @@ export const Editor: React.FC<EditorProps> = ({
             />
           </label>
           <span
-            className={"text-xs " + (
-              saveStatus === "saved"
+            className={
+              "text-xs " +
+              (saveStatus === "saved"
                 ? "text-success"
                 : saveStatus === "unsaved"
                 ? "text-warning"
                 : saveStatus === "saving"
                 ? "text-info"
-                : "text-error"
-            )}
+                : "text-error")
+            }
           >
             {saveStatus === "saved"
               ? "Saved"
@@ -423,16 +501,30 @@ export const Editor: React.FC<EditorProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Editor body */}
       <div className="flex flex-1 overflow-hidden">
+        {/* Line numbers */}
         <div
           ref={lineNumbersRef}
           className="overflow-hidden select-none text-right pr-2 pl-2 py-2 bg-base-200 border-r border-base-300 font-mono text-sm leading-6 text-base-content/30"
           style={{ minWidth: "3rem" }}
         >
-          {lines.map((n) => (
-            <div key={n}>{n}</div>
+          {lines.map((n, i) => (
+            <div
+              key={n}
+              style={
+                hasHeights
+                  ? { height: lineHeights[i], lineHeight: BASE_LINE_HEIGHT + "px" }
+                  : undefined
+              }
+            >
+              {n}
+            </div>
           ))}
         </div>
+
+        {/* Textarea */}
         <textarea
           ref={textareaRef}
           className="flex-1 resize-none bg-base-100 text-base-content font-mono text-sm leading-6 p-2 outline-none"
@@ -448,6 +540,7 @@ export const Editor: React.FC<EditorProps> = ({
     </div>
   );
 };
+
 ```
 
 ## `components/CreateFileModal.tsx`
